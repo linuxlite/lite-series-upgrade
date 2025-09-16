@@ -64,11 +64,24 @@ def _cmd_to_list(cmd, shell):
     return cmd
 
 
-def run_cmd(cmd, env=None, shell=False, timeout=None, log_output=True, dry_run=False):
-    """Run a command, streaming stdout/stderr. Return rc.
-       In dry-run, short-circuit apt/dpkg/upgrade tools to avoid delays entirely.
+def run_cmd(
+    cmd,
+    env=None,
+    shell=False,
+    timeout=None,
+    log_output=True,
+    dry_run=False,
+    check=False,
+):
+    """Run a command and return (rc, output_lines).
+
+    In dry-run mode, short-circuit apt/dpkg/upgrade tools to avoid delays. When
+    ``check`` is True, raise ``subprocess.CalledProcessError`` on non-zero exit.
     """
+
     cmd_list = _cmd_to_list(cmd, shell)
+    display_cmd = cmd if isinstance(cmd, str) else " ".join(cmd_list)
+    output_lines: list[str] = []
 
     # Fast path for dry-run: DO NOT execute slow package tools
     if dry_run and isinstance(cmd, (str, list)):
@@ -77,47 +90,83 @@ def run_cmd(cmd, env=None, shell=False, timeout=None, log_output=True, dry_run=F
             base0 = os.path.basename(str(cmd[0]))
         elif isinstance(cmd, str):
             base0 = cmd.strip().split(" ")[0]
-        if base0 in ("apt", "apt-get", "/usr/bin/apt", "/usr/bin/apt-get", "dpkg", "/usr/bin/dpkg", "update-grub", "update-initramfs", "do-release-upgrade", "/usr/bin/do-release-upgrade"):
+        if base0 in (
+            "apt",
+            "apt-get",
+            "/usr/bin/apt",
+            "/usr/bin/apt-get",
+            "dpkg",
+            "/usr/bin/dpkg",
+            "update-grub",
+            "update-initramfs",
+            "do-release-upgrade",
+            "/usr/bin/do-release-upgrade",
+        ):
             preview = cmd if isinstance(cmd, str) else " ".join(cmd)
-            logger.info("[DRY RUN] Would run: %s", preview)
-            yield f"[DRY RUN] Would run: {preview}"
-            return 0
+            message = f"[DRY RUN] Would run: {preview}"
+            if log_output:
+                logger.info(message)
+            output_lines.append(message)
+            return 0, output_lines
 
-    logger.info("RUN: %s", cmd if isinstance(cmd, str) else " ".join(cmd_list))
+    logger.info("RUN: %s", display_cmd)
     full_env = os.environ.copy()
     if env:
         full_env.update(env)
 
-    process = subprocess.Popen(
-        cmd_list if not shell else (cmd if isinstance(cmd, str) else " ".join(cmd_list)),
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-        env=full_env,
-        shell=shell,
-    )
+    try:
+        process = subprocess.Popen(
+            cmd_list if not shell else (cmd if isinstance(cmd, str) else " ".join(cmd_list)),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+            env=full_env,
+            shell=shell,
+        )
+    except Exception as e:  # pragma: no cover - defensive
+        logger.exception("Failed to start %s: %s", display_cmd, e)
+        output_lines.append(str(e))
+        if check:
+            raise
+        return 1, output_lines
 
     start = time.time()
+    rc = 1
     try:
         soft_timeout = timeout or 1200  # 20 minutes
+        assert process.stdout is not None
         for line in process.stdout:
+            line = line.rstrip()
             if log_output:
-                logger.info(line.rstrip())
-            yield line.rstrip()
+                logger.info(line)
+            output_lines.append(line)
         rc = process.wait(timeout=soft_timeout)
         logger.info("RET(%s): %s s", rc, int(time.time() - start))
     except subprocess.TimeoutExpired:
         process.kill()
-        logger.error("Command timed out: %s", cmd)
         rc = 124
-    except Exception as e:
+        message = f"Command timed out: {display_cmd}"
+        logger.error(message)
+        output_lines.append(message)
+    except Exception as e:  # pragma: no cover - defensive
         process.kill()
-        logger.exception("Error running %s: %s", cmd, e)
-        rc = 1
+        message = f"Error running {display_cmd}: {e}"
+        logger.exception(message)
+        output_lines.append(message)
+    finally:
+        if process.stdout:
+            process.stdout.close()
+
     if rc != 0:
-        logger.warning("Non-zero exit: %s => %s", cmd, rc)
-    return rc
+        logger.warning("Non-zero exit: %s => %s", display_cmd, rc)
+        if check:
+            raise subprocess.CalledProcessError(
+                rc,
+                cmd if shell else cmd_list,
+                output="\n".join(output_lines),
+            )
+    return rc, output_lines
 
 
 def internet_available(host="archive.ubuntu.com", port=80, timeout=5):
@@ -214,6 +263,33 @@ class UpgradeEngine:
         ]
         return list(base) + list(args)
 
+    def _format_cmd(self, cmd) -> str:
+        return cmd if isinstance(cmd, str) else " ".join(cmd)
+
+    def _run_and_emit(
+        self,
+        cmd,
+        *,
+        env=None,
+        shell=False,
+        timeout=None,
+        log_output=True,
+        dry_run=None,
+        check=False,
+    ):
+        rc, output = run_cmd(
+            cmd,
+            env=env if env is not None else self.env,
+            shell=shell,
+            timeout=timeout,
+            log_output=log_output,
+            dry_run=self.dry_run if dry_run is None else dry_run,
+            check=check,
+        )
+        for line in output:
+            self.emit(line)
+        return rc, output
+
     # ---------- Steps ----------
     def step_system_check(self):
         self.emit(f"Logging to: {LOG_PATH}")
@@ -252,8 +328,10 @@ class UpgradeEngine:
         # Switch Linux Lite repo codename fluorite -> galena
         self._update_linuxlite_repo_codename(d)
         # apt update after codename swap
-        for _ in run_cmd(self._apt("update"), env=self.env, dry_run=self.dry_run):
-            pass
+        rc, _ = self._run_and_emit(self._apt("update"))
+        if rc != 0:
+            self.emit("apt-get update failed; aborting step.")
+            return False
         self._inc_progress(1, "Sources updated")
 
         # Disable non-Ubuntu/non-LinuxLite
@@ -276,6 +354,7 @@ class UpgradeEngine:
         remaining = self.WEIGHTS["Disable third-party & update Linux Lite repo"] - 1
         if remaining > 0:
             self._inc_progress(remaining, "Third-party sources handled")
+        return True
 
     def step_fix_common(self):
         cmds = [
@@ -289,9 +368,12 @@ class UpgradeEngine:
         per = max(1, weight // len(cmds))
         last_bonus = weight - per * (len(cmds) - 1)
         for i, cmd in enumerate(cmds):
-            for line in run_cmd(cmd, env=self.env, dry_run=self.dry_run):
-                self.emit(line)
+            rc, _ = self._run_and_emit(cmd)
+            if rc != 0:
+                self.emit(f"Command failed ({rc}): {self._format_cmd(cmd)}")
+                return False
             self._inc_progress(last_bonus if i == len(cmds) - 1 else per, "Fix/cleanup step done")
+        return True
 
     def step_ensure_tools(self):
         pkgs = ("update-manager-core", "ubuntu-release-upgrader-core")
@@ -299,9 +381,12 @@ class UpgradeEngine:
         per = max(1, weight // len(pkgs))
         last_bonus = weight - per * (len(pkgs) - 1)
         for i, pkg in enumerate(pkgs):
-            for line in run_cmd(self._apt("install", pkg), env=self.env, dry_run=self.dry_run):
-                self.emit(line)
+            rc, _ = self._run_and_emit(self._apt("install", pkg))
+            if rc != 0:
+                self.emit(f"Failed to install {pkg} (rc={rc}).")
+                return False
             self._inc_progress(last_bonus if i == len(pkgs) - 1 else per, f"Ensured {pkg}")
+        return True
 
     def step_release_upgrade(self):
         # Ensure LTS prompt
@@ -329,8 +414,10 @@ Prompt=lts
             self.emit("[DRY RUN] Would launch: do-release-upgrade -f DistUpgradeViewNonInteractive")
             self._inc_progress(remaining, "Simulated release upgrade")
             return True
-        for line in run_cmd(cmd, env=self.env, dry_run=False):
-            self.emit(line)
+        rc, _ = self._run_and_emit(cmd, dry_run=False)
+        if rc != 0:
+            self.emit(f"Release upgrade command failed (rc={rc}).")
+            return False
         self._inc_progress(remaining, "Release upgrade complete")
         return True
 
@@ -343,9 +430,12 @@ Prompt=lts
         per = max(1, weight // len(cmds))
         last_bonus = weight - per * (len(cmds) - 1)
         for i, cmd in enumerate(cmds):
-            for line in run_cmd(cmd, env=self.env, dry_run=self.dry_run):
-                self.emit(line)
+            rc, _ = self._run_and_emit(cmd)
+            if rc != 0:
+                self.emit(f"Command failed ({rc}): {self._format_cmd(cmd)}")
+                return False
             self._inc_progress(last_bonus if i == len(cmds) - 1 else per, "Auto-resolve step done")
+        return True
 
     # ---- LibreOffice bundle helpers ----
     def _download_file(self, url: str, dest: Path):
@@ -408,18 +498,24 @@ Prompt=lts
         if not debs:
             self.emit("No .deb files found in the bundle.")
             return False
-        for line in run_cmd(["/usr/bin/dpkg", "-i"] + debs, env=self.env, dry_run=False):
-            self.emit(line)
+        rc, _ = self._run_and_emit(["/usr/bin/dpkg", "-i"] + debs, dry_run=False)
+        if rc != 0:
+            self.emit(f"Failed to install LibreOffice bundle (rc={rc}).")
+            return False
         self._inc_progress(1, "Installed LibreOffice .deb packages")
-        for line in run_cmd(self._apt("-f", "install"), env=self.env, dry_run=False):
-            self.emit(line)
+        rc, _ = self._run_and_emit(self._apt("-f", "install"), dry_run=False)
+        if rc != 0:
+            self.emit(f"Failed to resolve LibreOffice dependencies (rc={rc}).")
+            return False
         self._inc_progress(1, "Resolved LibreOffice dependencies")
 
         # Uninstall previous LibreOffice version (7.5)
         self.emit("Removing previous LibreOffice version (7.5)…")
         purge_cmd = "apt-get -y remove --purge 'libreoffice7.5*'"
-        for line in run_cmd(purge_cmd, env=self.env, dry_run=False, shell=True):
-            self.emit(line)
+        rc, _ = self._run_and_emit(purge_cmd, dry_run=False, shell=True)
+        if rc != 0:
+            self.emit(f"Failed to purge LibreOffice 7.5 packages (rc={rc}).")
+            return False
         self._inc_progress(1, "Removed old LibreOffice 7.5")
 
         # Remove old .desktop entries
@@ -449,9 +545,12 @@ Prompt=lts
         per = max(1, weight // len(cmds))
         last_bonus = weight - per * (len(cmds) - 1)
         for i, cmd in enumerate(cmds):
-            for line in run_cmd(cmd, env=self.env, dry_run=self.dry_run):
-                self.emit(line)
+            rc, _ = self._run_and_emit(cmd)
+            if rc != 0:
+                self.emit(f"Command failed ({rc}): {self._format_cmd(cmd)}")
+                return False
             self._inc_progress(last_bonus if i == len(cmds) - 1 else per, "Post-upgrade step done")
+        return True
     def _replace_in_file(self, path: Path, replacements: list[tuple[str, str]]):
         try:
             if not path.exists():
@@ -654,11 +753,7 @@ Prompt=lts
             self._inc_progress(self.WEIGHTS["Verify upgraded release"], "Verification skipped (dry run)")
             return True
         ok = False
-        for line in run_cmd(["/usr/bin/lsb_release", "-a"], env=self.env):
-            self.emit(line)
-            if "Release:        24.04" in line or "codename:    noble" in line.lower():
-                ok = True
-        self._inc_progress(self.WEIGHTS["Verify upgraded release"], "Verification complete")
+
         if ok:
             self.emit("Upgrade appears successful: target release 24.04 detected.")
         else:
@@ -667,30 +762,36 @@ Prompt=lts
 
     def step_reenable_known_ppas(self):
         d = Path("/etc/apt/sources.list.d")
-        to_consider = list(d.glob("*.list.disabled"))
+        seen: set[Path] = set()
+        to_consider: list[Path] = []
+
+        # Prefer the explicit list of files we disabled earlier in this run.
+        for recorded in self.disabled_lists:
+            recorded_path = Path(recorded)
+            if recorded_path not in seen:
+                to_consider.append(recorded_path)
+                seen.add(recorded_path)
+
+        # Fall back to scanning the directory (also captures any new items).
+        for candidate in d.glob("*.list.disabled"):
+            if candidate not in seen:
+                to_consider.append(candidate)
+                seen.add(candidate)
+
         if not to_consider:
             self.emit("No disabled third-party entries detected.")
             self._inc_progress(self.WEIGHTS["Re-enable known-good PPAs"], "No PPAs to re-enable")
             return True
         count = 0
         for f in to_consider:
+            target = f.with_suffix("")
+            content_path = f if f.exists() else target
+            if not content_path.exists():
+                self.emit(f"Warning: could not locate {f.name} or {target.name}; skipping")
+                continue
             try:
-                txt = f.read_text()
-                if any(s in txt for s in self.KNOWN_PPA_WHITELIST):
-                    target = f.with_suffix("")
-                    if self.dry_run:
-                        self.emit(f"[DRY RUN] Would re-enable {target.name}")
-                    else:
-                        if target.exists():
-                            self.emit(f"Already enabled: {target.name}")
-                        else:
-                            f.rename(target)
-                            self.emit(f"Re-enabled {target.name}")
-                    count += 1
+                txt = content_path.read_text()
             except Exception as e:
-                self.emit(f"Warning: could not process {f.name}: {e}")
-        for _ in run_cmd(self._apt("update"), env=self.env, dry_run=self.dry_run):
-            pass
         self._inc_progress(self.WEIGHTS["Re-enable known-good PPAs"], f"Re-enabled {count} PPAs")
         return True
 
