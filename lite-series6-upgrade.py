@@ -585,28 +585,51 @@ Prompt=lts
 
     def step_reenable_known_ppas(self):
         d = Path("/etc/apt/sources.list.d")
-        to_consider = list(d.glob("*.list.disabled"))
+        seen: set[Path] = set()
+        to_consider: list[Path] = []
+
+        # Prefer the explicit list of files we disabled earlier in this run.
+        for recorded in self.disabled_lists:
+            recorded_path = Path(recorded)
+            if recorded_path not in seen:
+                to_consider.append(recorded_path)
+                seen.add(recorded_path)
+
+        # Fall back to scanning the directory (also captures any new items).
+        for candidate in d.glob("*.list.disabled"):
+            if candidate not in seen:
+                to_consider.append(candidate)
+                seen.add(candidate)
+
         if not to_consider:
             self.emit("No disabled third-party entries detected.")
             self._inc_progress(self.WEIGHTS["Re-enable known-good PPAs"], "No PPAs to re-enable")
             return True
         count = 0
         for f in to_consider:
+            target = f.with_suffix("")
+            content_path = f if f.exists() else target
+            if not content_path.exists():
+                self.emit(f"Warning: could not locate {f.name} or {target.name}; skipping")
+                continue
             try:
-                txt = f.read_text()
-                if any(s in txt for s in self.KNOWN_PPA_WHITELIST):
-                    target = f.with_suffix("")
-                    if self.dry_run:
-                        self.emit(f"[DRY RUN] Would re-enable {target.name}")
-                    else:
-                        if target.exists():
-                            self.emit(f"Already enabled: {target.name}")
-                        else:
-                            f.rename(target)
-                            self.emit(f"Re-enabled {target.name}")
-                    count += 1
+                txt = content_path.read_text()
             except Exception as e:
-                self.emit(f"Warning: could not process {f.name}: {e}")
+                self.emit(f"Warning: could not process {content_path.name}: {e}")
+                continue
+            if any(s in txt for s in self.KNOWN_PPA_WHITELIST):
+                if self.dry_run:
+                    self.emit(f"[DRY RUN] Would re-enable {target.name}")
+                else:
+                    if target.exists():
+                        self.emit(f"Already enabled: {target.name}")
+                    elif not f.exists():
+                        self.emit(f"Warning: expected {f.name} to exist; skipping")
+                        continue
+                    else:
+                        f.rename(target)
+                        self.emit(f"Re-enabled {target.name}")
+                count += 1
         for _ in run_cmd(self._apt("update"), env=self.env, dry_run=self.dry_run):
             pass
         self._inc_progress(self.WEIGHTS["Re-enable known-good PPAs"], f"Re-enabled {count} PPAs")
