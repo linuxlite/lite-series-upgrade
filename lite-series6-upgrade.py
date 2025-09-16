@@ -35,6 +35,8 @@ APP_ID = "com.linuxlite.LiteSeries6Upgrade"
 LL_FROM_VERSION = "6.6"
 LL_TO_VERSION = "7.0"
 LL_TO_SERIES_LTS = "7.6"
+UBUNTU_FROM_CODENAME = "jammy"
+UBUNTU_TO_CODENAME = "noble"
 LOG_PATH_ROOT = Path("/var/log/ll-series-upgrade.log")
 LOG_PATH_FALLBACK = Path("/tmp/ll-series-upgrade.log")
 BUNDLE_URL = "https://repo.linuxliteos.com/upgrade/7.6/libreoffice/loffice76.tar.gz"
@@ -323,6 +325,31 @@ class UpgradeEngine:
             except Exception as e:
                 self.emit(f"Warning: could not update {fname}: {e}")
 
+    def _update_ubuntu_codename(self) -> int:
+        apt_dir = Path("/etc/apt")
+        candidates: list[Path] = []
+        sources_list = apt_dir / "sources.list"
+        if sources_list.exists():
+            candidates.append(sources_list)
+        sources_d = apt_dir / "sources.list.d"
+        if sources_d.exists():
+            for path in sources_d.iterdir():
+                if not path.is_file():
+                    continue
+                if path.name.endswith(".disabled"):
+                    continue
+                if path.suffix not in {".list", ".sources"}:
+                    continue
+                candidates.append(path)
+        changed = 0
+        for path in candidates:
+            if self._replace_in_file(
+                path,
+                [(UBUNTU_FROM_CODENAME, UBUNTU_TO_CODENAME)],
+            ):
+                changed += 1
+        return changed
+
     def step_disable_third_party(self):
         d = Path("/etc/apt/sources.list.d")
         # Switch Linux Lite repo codename fluorite -> galena
@@ -376,49 +403,55 @@ class UpgradeEngine:
         return True
 
     def step_ensure_tools(self):
-        pkgs = ("update-manager-core", "ubuntu-release-upgrader-core")
-        weight = self.WEIGHTS["Ensure upgrade tools"]
-        per = max(1, weight // len(pkgs))
-        last_bonus = weight - per * (len(pkgs) - 1)
-        for i, pkg in enumerate(pkgs):
-            rc, _ = self._run_and_emit(self._apt("install", pkg))
-            if rc != 0:
-                self.emit(f"Failed to install {pkg} (rc={rc}).")
-                return False
-            self._inc_progress(last_bonus if i == len(pkgs) - 1 else per, f"Ensured {pkg}")
+        required_tools = ("/usr/bin/apt-get", "/usr/bin/dpkg")
+        missing = [tool for tool in required_tools if not Path(tool).exists()]
+        if missing:
+            self.emit("Missing required tool(s): " + ", ".join(missing))
+            return False
+        self.emit("APT tooling available for manual release upgrade.")
+        self._inc_progress(self.WEIGHTS["Ensure upgrade tools"], "Verified upgrade tooling")
         return True
 
     def step_release_upgrade(self):
-        # Ensure LTS prompt
-        try:
-            conf = Path("/etc/update-manager/release-upgrades")
-            if conf.exists() and not self.dry_run:
-                bak = conf.with_suffix(".bak")
-                shutil.copy2(conf, bak)
-            if not self.dry_run:
-                conf.write_text("""[DEFAULT]
-Prompt=lts
-""")
-            else:
-                self.emit("[DRY RUN] Would set Prompt=lts in /etc/update-manager/release-upgrades")
-        except Exception as e:
-            self.emit(f"Warning: could not write release-upgrades config: {e}")
-        prep_weight = 1
-        self._inc_progress(prep_weight, "Prepared release-upgrades config")
+        self.emit(
+            f"Switching Ubuntu repositories {UBUNTU_FROM_CODENAME} → {UBUNTU_TO_CODENAME}…"
+        )
+        changed = self._update_ubuntu_codename()
+        if changed:
+            self.emit(
+                f"Updated {changed} apt source file(s) to {UBUNTU_TO_CODENAME}."
+            )
+        else:
+            self.emit(
+                f"No apt source entries required {UBUNTU_FROM_CODENAME} → {UBUNTU_TO_CODENAME} changes."
+            )
 
-        cmd = ["/usr/bin/do-release-upgrade", "-f", "DistUpgradeViewNonInteractive"]
-        remaining = self.WEIGHTS["Release upgrade to 24.04"] - prep_weight
-        if remaining < 1:
-            remaining = 1
-        if self.dry_run:
-            self.emit("[DRY RUN] Would launch: do-release-upgrade -f DistUpgradeViewNonInteractive")
-            self._inc_progress(remaining, "Simulated release upgrade")
-            return True
-        rc, _ = self._run_and_emit(cmd, dry_run=False)
+        weight = self.WEIGHTS["Release upgrade to 24.04"]
+        sources_units = 1 if weight > 2 else 0
+        update_units = 1 if weight > 1 else 0
+        upgrade_units = weight - sources_units - update_units
+
+        if sources_units:
+            self._inc_progress(sources_units, "Apt sources retargeted")
+
+        self.emit("Refreshing package lists after codename switch…")
+        rc, _ = self._run_and_emit(self._apt("update"))
         if rc != 0:
-            self.emit(f"Release upgrade command failed (rc={rc}).")
+            self.emit("apt-get update failed after switching to noble.")
             return False
-        self._inc_progress(remaining, "Release upgrade complete")
+        if update_units:
+            self._inc_progress(update_units, f"Package lists refreshed ({UBUNTU_TO_CODENAME})")
+
+        self.emit("Upgrading installed packages for the new release…")
+        rc, _ = self._run_and_emit(self._apt("dist-upgrade"))
+        if rc != 0:
+            self.emit(f"Distribution upgrade failed (rc={rc}).")
+            return False
+        if upgrade_units:
+            self._inc_progress(
+                upgrade_units,
+                f"Distribution upgrade to {UBUNTU_TO_CODENAME} complete",
+            )
         return True
 
     def step_auto_resolve(self):
