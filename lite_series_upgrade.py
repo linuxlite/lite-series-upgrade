@@ -833,6 +833,7 @@ class MainWindow(Gtk.ApplicationWindow):
         self.textview = Gtk.TextView(buffer=self.buffer)
         self.textview.set_editable(False)
         self.textview.set_monospace(True)
+        self.textview.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
         scroller.set_child(self.textview)
 
         btn_box = Gtk.Box(spacing=8)
