@@ -310,14 +310,14 @@ class UpgradeEngine:
             try:
                 content = fpath.read_text()
                 if "fluorite" in content:
-                    backup = fpath.with_suffix(fpath.suffix + f".bak-{int(time.time())}")
                     if self.dry_run:
-                        self.emit(f"[DRY RUN] Would back up {fname} -> {backup.name} and replace 'fluorite' with 'galena'")
+                        self.emit(
+                            f"[DRY RUN] Would replace 'fluorite' with 'galena' in {fname}"
+                        )
                     else:
-                        shutil.copy2(fpath, backup)
                         new_content = content.replace("fluorite", "galena")
                         fpath.write_text(new_content)
-                        self.emit(f"Updated {fname}: fluorite -> galena (backup: {backup.name})")
+                        self.emit(f"Updated {fname}: fluorite -> galena")
                 else:
                     self.emit(f"No 'fluorite' found in {fname}; no change needed")
             except Exception as e:
