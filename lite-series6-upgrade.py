@@ -792,6 +792,32 @@ Prompt=lts
             try:
                 txt = content_path.read_text()
             except Exception as e:
+                self.emit(f"Warning: could not process {content_path.name}: {e}")
+                continue
+            if not any(s in txt for s in self.KNOWN_PPA_WHITELIST):
+                self.emit(f"Skipping {content_path.name}: not in whitelist")
+                continue
+            if self.dry_run:
+                self.emit(f"[DRY RUN] Would re-enable {target.name}")
+                count += 1
+                continue
+            if target.exists():
+                self.emit(f"Already enabled: {target.name}")
+                continue
+            if not f.exists():
+                self.emit(f"Warning: expected {f.name} to exist; skipping")
+                continue
+            try:
+                f.rename(target)
+                self.emit(f"Re-enabled {target.name}")
+                count += 1
+            except Exception as e:
+                self.emit(f"Warning: could not re-enable {target.name}: {e}")
+        if count > 0:
+            rc, _ = self._run_and_emit(self._apt("update"))
+            if rc != 0:
+                self.emit("apt-get update failed after re-enabling PPAs.")
+                return False
         self._inc_progress(self.WEIGHTS["Re-enable known-good PPAs"], f"Re-enabled {count} PPAs")
         return True
 
