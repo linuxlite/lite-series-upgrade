@@ -495,10 +495,39 @@ Prompt=lts
             self._inc_progress(self.WEIGHTS["Verify upgraded release"], "Verification & branding skipped (dry run)")
             return True
         ok = False
-        for line in run_cmd(["/usr/bin/lsb_release", "-a"], env=self.env):
+        release_raw = None
+        release_numeric = None
+        for line in run_cmd(["/usr/bin/lsb_release", "-rs"], env=self.env):
             self.emit(line)
-            if "Release:	24.04" in line or "codename:	noble" in line.lower():
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if release_raw is None:
+                release_raw = stripped
+            if release_numeric is None and all(ch.isdigit() or ch == "." for ch in stripped):
+                release_numeric = stripped
+        if release_numeric == "24.04":
+            ok = True
+        else:
+            if release_numeric:
+                self.emit(f"Note: lsb_release -rs returned {release_numeric} (expected 24.04).")
+            elif release_raw:
+                self.emit(f"Note: lsb_release -rs output: {release_raw}")
+            else:
+                self.emit("Warning: lsb_release -rs produced no output.")
+            codename_raw = None
+            for line in run_cmd(["/usr/bin/lsb_release", "-cs"], env=self.env):
+                self.emit(line)
+                stripped = line.strip()
+                if stripped and codename_raw is None:
+                    codename_raw = stripped
+            if codename_raw and codename_raw.lower() == "noble":
                 ok = True
+            else:
+                if codename_raw:
+                    self.emit(f"Note: lsb_release -cs returned {codename_raw} (expected noble).")
+                else:
+                    self.emit("Warning: lsb_release -cs produced no output.")
         # Update version branding files
         try:
             Path("/etc/llver").write_text("Linux Lite 7.0")
