@@ -576,79 +576,184 @@ Prompt=lts
             self.emit(f"Warning: could not update {path}: {e}")
             return False
 
+    def _write_file(self, path: Path, content: str, description: str) -> bool:
+        try:
+            if self.dry_run:
+                self.emit(f"[DRY RUN] Would set {path} → {description}")
+                return True
+            if path.exists():
+                current = path.read_text()
+                if current == content:
+                    self.emit(f"No changes needed in {path}")
+                    return False
+                backup = path.with_suffix(path.suffix + f".bak-{int(time.time())}")
+                shutil.copy2(path, backup)
+                path.write_text(content)
+                self.emit(f"Updated {path} → {description} (backup: {backup.name})")
+            else:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(content)
+                self.emit(f"Created {path} → {description}")
+            return True
+        except Exception as e:
+            self.emit(f"Warning: could not update {path}: {e}")
+            return False
+
+    def _update_line(
+        self,
+        path: Path,
+        prefix: str,
+        new_line: str,
+        description: str,
+        *,
+        strip: bool = False,
+    ) -> bool:
+        try:
+            if not path.exists():
+                self.emit(f"Note: {path} not found; skipping")
+                return False
+            lines = path.read_text().splitlines()
+            found = False
+            changed = False
+            for idx, line in enumerate(lines):
+                compare = line.strip() if strip else line
+                if compare.startswith(prefix):
+                    found = True
+                    replacement = new_line
+                    if strip:
+                        leading = line[: len(line) - len(line.lstrip())]
+                        replacement = leading + new_line
+                    if lines[idx] != replacement:
+                        lines[idx] = replacement
+                        changed = True
+                    break
+            if not found:
+                self.emit(f"Note: {path} missing entry starting with {prefix}; skipping")
+                return False
+            if not changed:
+                self.emit(f"No changes needed in {path}")
+                return False
+            if self.dry_run:
+                self.emit(f"[DRY RUN] Would modify {path} ({description})")
+                return True
+            backup = path.with_suffix(path.suffix + f".bak-{int(time.time())}")
+            shutil.copy2(path, backup)
+            path.write_text("\n".join(lines) + "\n")
+            self.emit(f"Updated {path} ({description}; backup: {backup.name})")
+            return True
+        except Exception as e:
+            self.emit(f"Warning: could not update {path}: {e}")
+            return False
+
     def step_update_branding(self):
         self.emit("Updating Linux Lite branding/version files…")
         changed = 0
-        changed += bool(self._replace_in_file(Path("/etc/llver"), [(f"Linux Lite {LL_FROM_VERSION}", f"Linux Lite {LL_TO_VERSION}")]))
-        changed += bool(self._replace_in_file(Path("/etc/issue"), [(f"Linux Lite {LL_FROM_VERSION} LTS \n \l", f"Linux Lite {LL_TO_SERIES_LTS} LTS \n \l")]))
-        changed += bool(self._replace_in_file(Path("/etc/lsb-release"), [(f'DISTRIB_DESCRIPTION="Linux Lite {LL_FROM_VERSION}"', f'DISTRIB_DESCRIPTION="Linux Lite {LL_TO_VERSION}"')]))
-        changed += bool(self._replace_in_file(Path("/etc/os-release"), [(f'PRETTY_NAME="Linux Lite {LL_FROM_VERSION}"', f'PRETTY_NAME="Linux Lite {LL_TO_VERSION}"')]))
-        changed += bool(self._replace_in_file(Path("/usr/share/plymouth/themes/text.plymouth"), [(f"title=Linux Lite {LL_FROM_VERSION}", f"title=Linux Lite {LL_TO_VERSION}")]))
-        self._inc_progress(self.WEIGHTS["Update branding/version files"], f"Branding files updated ({changed} file(s))")
+
+        llver_path = Path("/etc/llver")
+        llver_target = f"Linux Lite {LL_TO_VERSION}"
+        llver_changed = self._replace_in_file(
+            llver_path,
+            [(f"Linux Lite {LL_FROM_VERSION}", llver_target)],
+        )
+        if not llver_changed:
+            llver_changed = self._write_file(llver_path, llver_target, llver_target)
+        changed += 1 if llver_changed else 0
+
+        issue_path = Path("/etc/issue")
+        issue_literal_target = f"Linux Lite {LL_TO_SERIES_LTS} LTS \\n \\l"
+        issue_changed = self._replace_in_file(
+            issue_path,
+            [
+                (
+                    f"Linux Lite {LL_FROM_VERSION} LTS \\n \\l",
+                    issue_literal_target,
+                )
+            ],
+        )
+        if not issue_changed:
+            try:
+                current_issue = issue_path.read_text()
+            except Exception:
+                current_issue = ""
+            issue_target = issue_literal_target
+            if "\\\\n" not in current_issue and "\\n" in current_issue:
+                issue_target = f"Linux Lite {LL_TO_SERIES_LTS} LTS \n \l"
+            issue_changed = self._write_file(
+                issue_path,
+                issue_target,
+                f"Linux Lite {LL_TO_SERIES_LTS} LTS",
+            )
+        changed += 1 if issue_changed else 0
+
+        lsb_path = Path("/etc/lsb-release")
+        lsb_target = f'DISTRIB_DESCRIPTION="Linux Lite {LL_TO_VERSION}"'
+        lsb_changed = self._replace_in_file(
+            lsb_path,
+            [
+                (
+                    f'DISTRIB_DESCRIPTION="Linux Lite {LL_FROM_VERSION}"',
+                    lsb_target,
+                )
+            ],
+        )
+        if not lsb_changed:
+            lsb_changed = self._update_line(
+                lsb_path,
+                "DISTRIB_DESCRIPTION=",
+                lsb_target,
+                "DISTRIB_DESCRIPTION entry",
+            )
+        changed += 1 if lsb_changed else 0
+
+        os_release_path = Path("/etc/os-release")
+        os_release_target = f'PRETTY_NAME="Linux Lite {LL_TO_VERSION}"'
+        os_changed = self._replace_in_file(
+            os_release_path,
+            [
+                (
+                    f'PRETTY_NAME="Linux Lite {LL_FROM_VERSION}"',
+                    os_release_target,
+                )
+            ],
+        )
+        if not os_changed:
+            os_changed = self._update_line(
+                os_release_path,
+                "PRETTY_NAME=",
+                os_release_target,
+                "PRETTY_NAME entry",
+            )
+        changed += 1 if os_changed else 0
+
+        plymouth_path = Path("/usr/share/plymouth/themes/text.plymouth")
+        plymouth_target = f"title=Linux Lite {LL_TO_VERSION}"
+        plymouth_changed = self._replace_in_file(
+            plymouth_path,
+            [(f"title=Linux Lite {LL_FROM_VERSION}", plymouth_target)],
+        )
+        if not plymouth_changed:
+            plymouth_changed = self._update_line(
+                plymouth_path,
+                "title=",
+                plymouth_target,
+                "plymouth title",
+                strip=True,
+            )
+        changed += 1 if plymouth_changed else 0
+
+        self._inc_progress(
+            self.WEIGHTS["Update branding/version files"],
+            f"Branding files updated ({changed} file(s))",
+        )
         return True
 
     def step_verify(self):
         if self.dry_run:
             self.emit("[DRY RUN] Skipping verification (lsb_release)")
-            self.emit("[DRY RUN] Would update /etc/llver, /etc/issue, /etc/lsb-release, /etc/os-release, and text.plymouth with new version strings")
-            self._inc_progress(self.WEIGHTS["Verify upgraded release"], "Verification & branding skipped (dry run)")
+            self._inc_progress(self.WEIGHTS["Verify upgraded release"], "Verification skipped (dry run)")
             return True
         ok = False
-                ok = True
-            else:
-                if codename_raw:
-                    self.emit(f"Note: lsb_release -cs returned {codename_raw} (expected noble).")
-                else:
-                    self.emit("Warning: lsb_release -cs produced no output.")
-        # Update version branding files
-        try:
-            Path("/etc/llver").write_text("Linux Lite 7.0")
-            self.emit("Updated /etc/llver → Linux Lite 7.0")
-        except Exception as e:
-            self.emit(f"Warning: could not update /etc/llver: {e}")
-        try:
-            Path("/etc/issue").write_text("Linux Lite 7.6 LTS \n \l")
-            self.emit("Updated /etc/issue → Linux Lite 7.6 LTS")
-        except Exception as e:
-            self.emit(f"Warning: could not update /etc/issue: {e}")
-        try:
-            lsb = Path("/etc/lsb-release").read_text().splitlines()
-            new_lsb = []
-            for line in lsb:
-                if line.startswith("DISTRIB_DESCRIPTION="):
-                    new_lsb.append('DISTRIB_DESCRIPTION="Linux Lite 7.0"')
-                else:
-                    new_lsb.append(line)
-            Path("/etc/lsb-release").write_text("\n".join(new_lsb) + "\n")
-            self.emit("Updated /etc/lsb-release → DISTRIB_DESCRIPTION=Linux Lite 7.0")
-        except Exception as e:
-            self.emit(f"Warning: could not update /etc/lsb-release: {e}")
-        try:
-            osrel = Path("/etc/os-release").read_text().splitlines()
-            new_osrel = []
-            for line in osrel:
-                if line.startswith("PRETTY_NAME="):
-                    new_osrel.append('PRETTY_NAME="Linux Lite 7.0"')
-                else:
-                    new_osrel.append(line)
-            Path("/etc/os-release").write_text("\n".join(new_osrel) + "\n")
-            self.emit("Updated /etc/os-release → PRETTY_NAME=Linux Lite 7.0")
-        except Exception as e:
-            self.emit(f"Warning: could not update /etc/os-release: {e}")
-        try:
-            ply = Path("/usr/share/plymouth/themes/text.plymouth").read_text().splitlines()
-            new_ply = []
-            for line in ply:
-                if line.strip().startswith("title="):
-                    new_ply.append("title=Linux Lite 7.0")
-                else:
-                    new_ply.append(line)
-            Path("/usr/share/plymouth/themes/text.plymouth").write_text("\n".join(new_ply) + "\n")
-            self.emit("Updated plymouth text theme title → Linux Lite 7.0")
-        except Exception as e:
-            self.emit(f"Warning: could not update plymouth theme: {e}")
 
-        self._inc_progress(self.WEIGHTS["Verify upgraded release"], "Verification & branding complete")
         if ok:
             self.emit("Upgrade appears successful: target release 24.04 detected.")
         else:
