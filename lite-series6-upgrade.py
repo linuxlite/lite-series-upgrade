@@ -594,16 +594,12 @@ Prompt=lts
             self._inc_progress(self.WEIGHTS["Verify upgraded release"], "Verification & branding skipped (dry run)")
             return True
         ok = False
-        rc, output = self._run_and_emit(["/usr/bin/lsb_release", "-a"])
-        if rc != 0:
-            self.emit(f"lsb_release command failed (rc={rc}).")
-            return False
-        for line in output:
-            normalized = line.lower()
-            if "release" in normalized and "24.04" in normalized:
                 ok = True
-            if "codename" in normalized and "noble" in normalized:
-                ok = True
+            else:
+                if codename_raw:
+                    self.emit(f"Note: lsb_release -cs returned {codename_raw} (expected noble).")
+                else:
+                    self.emit("Warning: lsb_release -cs produced no output.")
         # Update version branding files
         try:
             Path("/etc/llver").write_text("Linux Lite 7.0")
@@ -661,32 +657,36 @@ Prompt=lts
 
     def step_reenable_known_ppas(self):
         d = Path("/etc/apt/sources.list.d")
-        to_consider = list(d.glob("*.list.disabled"))
+        seen: set[Path] = set()
+        to_consider: list[Path] = []
+
+        # Prefer the explicit list of files we disabled earlier in this run.
+        for recorded in self.disabled_lists:
+            recorded_path = Path(recorded)
+            if recorded_path not in seen:
+                to_consider.append(recorded_path)
+                seen.add(recorded_path)
+
+        # Fall back to scanning the directory (also captures any new items).
+        for candidate in d.glob("*.list.disabled"):
+            if candidate not in seen:
+                to_consider.append(candidate)
+                seen.add(candidate)
+
         if not to_consider:
             self.emit("No disabled third-party entries detected.")
             self._inc_progress(self.WEIGHTS["Re-enable known-good PPAs"], "No PPAs to re-enable")
             return True
         count = 0
         for f in to_consider:
+            target = f.with_suffix("")
+            content_path = f if f.exists() else target
+            if not content_path.exists():
+                self.emit(f"Warning: could not locate {f.name} or {target.name}; skipping")
+                continue
             try:
-                txt = f.read_text()
-                if any(s in txt for s in self.KNOWN_PPA_WHITELIST):
-                    target = f.with_suffix("")
-                    if self.dry_run:
-                        self.emit(f"[DRY RUN] Would re-enable {target.name}")
-                    else:
-                        if target.exists():
-                            self.emit(f"Already enabled: {target.name}")
-                        else:
-                            f.rename(target)
-                            self.emit(f"Re-enabled {target.name}")
-                    count += 1
+                txt = content_path.read_text()
             except Exception as e:
-                self.emit(f"Warning: could not process {f.name}: {e}")
-        rc, _ = self._run_and_emit(self._apt("update"))
-        if rc != 0:
-            self.emit("apt-get update failed while re-enabling PPAs.")
-            return False
         self._inc_progress(self.WEIGHTS["Re-enable known-good PPAs"], f"Re-enabled {count} PPAs")
         return True
 
