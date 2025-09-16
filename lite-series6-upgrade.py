@@ -869,12 +869,14 @@ class MainWindow(Gtk.ApplicationWindow):
 
         scroller = Gtk.ScrolledWindow()
         scroller.set_vexpand(True)
+        scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
         outer.append(scroller)
 
         self.buffer = Gtk.TextBuffer()
         self.textview = Gtk.TextView(buffer=self.buffer)
         self.textview.set_editable(False)
         self.textview.set_monospace(True)
+        self.textview.set_wrap_mode(Gtk.WrapMode.WORD_CHAR)
         scroller.set_child(self.textview)
 
         btn_box = Gtk.Box(spacing=8)
