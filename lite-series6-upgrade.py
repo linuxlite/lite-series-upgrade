@@ -518,7 +518,7 @@ Prompt=lts
                     new_lsb.append('DISTRIB_DESCRIPTION="Linux Lite 7.0"')
                 else:
                     new_lsb.append(line)
-            Path("/etc/lsb-release").write_text(" ".join(new_lsb) + " ")
+            Path("/etc/lsb-release").write_text("\n".join(new_lsb) + "\n")
             self.emit("Updated /etc/lsb-release → DISTRIB_DESCRIPTION=Linux Lite 7.0")
         except Exception as e:
             self.emit(f"Warning: could not update /etc/lsb-release: {e}")
@@ -530,7 +530,7 @@ Prompt=lts
                     new_osrel.append('PRETTY_NAME="Linux Lite 7.0"')
                 else:
                     new_osrel.append(line)
-            Path("/etc/os-release").write_text(" ".join(new_osrel) + " ")
+            Path("/etc/os-release").write_text("\n".join(new_osrel) + "\n")
             self.emit("Updated /etc/os-release → PRETTY_NAME=Linux Lite 7.0")
         except Exception as e:
             self.emit(f"Warning: could not update /etc/os-release: {e}")
@@ -542,7 +542,7 @@ Prompt=lts
                     new_ply.append("title=Linux Lite 7.0")
                 else:
                     new_ply.append(line)
-            Path("/usr/share/plymouth/themes/text.plymouth").write_text(" ".join(new_ply) + " ")
+            Path("/usr/share/plymouth/themes/text.plymouth").write_text("\n".join(new_ply) + "\n")
             self.emit("Updated plymouth text theme title → Linux Lite 7.0")
         except Exception as e:
             self.emit(f"Warning: could not update plymouth theme: {e}")
