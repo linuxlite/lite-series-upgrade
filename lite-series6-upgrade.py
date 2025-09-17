@@ -66,6 +66,34 @@ def _add_project_root_to_sys_path() -> bool:
         for lib_dir in ("lib", "lib64", "share"):
             search_roots.append(prefix / lib_dir / "lite-series-upgrade")
 
+    # Python installations on Debian/Ubuntu place packages under
+    # ``lib/pythonX/dist-packages`` or ``lib/pythonX/site-packages``.  These
+    # directories are normally on ``sys.path`` when running the interpreter, but
+    # pkexec sanitises environment variables which can lead to an empty
+    # ``PYTHONPATH``.  Include the standard site package directories so the
+    # bundled package can still be found.
+    import sysconfig
+    import site
+
+    site_dirs: set[Path] = set()
+    site_dirs.update(Path(path) for path in sysconfig.get_paths().values())
+
+    try:
+        site_dirs.update(Path(path) for path in site.getsitepackages())
+    except AttributeError:
+        # ``site.getsitepackages`` is not available in virtual environments.
+        pass
+
+    try:
+        user_site = site.getusersitepackages()
+    except AttributeError:
+        user_site = None
+    if user_site:
+        site_dirs.add(Path(user_site))
+
+    for site_dir in site_dirs:
+        search_roots.append(site_dir)
+
     seen: set[Path] = set()
     for root in search_roots:
         try:
