@@ -37,6 +37,23 @@ sudo apt install python3-gi gir1.2-gtk-4.0 \
 > (or symlinked accordingly) and executed via `pkexec` so that it runs with
 > administrative privileges.
 
+## Installation
+
+Install both the launcher script and the accompanying
+`lite_series_upgrade` Python package so the GTK application can import its
+helpers at runtime. The bundled packaging configuration handles this when
+invoked with `pip`:
+
+```bash
+sudo python3 -m pip install .
+```
+
+This places the launcher at `/usr/bin/lite-series6-upgrade.py` and copies the
+`lite_series_upgrade/` directory into `/usr/lib/lite-series-upgrade/`, aligning
+with the import search paths baked into the script. If you prefer manual
+installation, ensure both of those locations exist—copy the launcher into
+`/usr/bin/` and the package directory into `/usr/lib/lite-series-upgrade/`.
+
 ## Usage
 
 ```bash
