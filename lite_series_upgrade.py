@@ -37,6 +37,8 @@ from pathlib import Path
 
 import gi
 
+from lite_series_upgrade.apt_sources import should_backup_apt_source
+
 
 # GTK
 gi.require_version("Gtk", "4.0")
@@ -561,10 +563,14 @@ Prompt=lts
                 if self.dry_run:
                     self.emit(f"[DRY RUN] Would modify {path}")
                     return True
-                backup = path.with_suffix(path.suffix + f".bak-{int(time.time())}")
-                shutil.copy2(path, backup)
+                if should_backup_apt_source(path):
+                    backup = path.with_suffix(path.suffix + f".bak-{int(time.time())}")
+                    shutil.copy2(path, backup)
+                    message = f"Updated {path} (backup: {backup.name})"
+                else:
+                    message = f"Updated {path} (no backup per policy)"
                 path.write_text(new_content)
-                self.emit(f"Updated {path} (backup: {backup.name})")
+                self.emit(message)
                 return True
             self.emit(f"No changes needed in {path}")
             return False
