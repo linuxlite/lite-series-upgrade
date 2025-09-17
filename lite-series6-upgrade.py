@@ -44,12 +44,27 @@ def _add_project_root_to_sys_path() -> bool:
         if path
     )
 
-    search_roots.extend(
-        [
-            Path("/usr/lib/lite-series-upgrade"),
-            Path("/usr/share/lite-series-upgrade"),
-        ]
+    prefixes: set[Path] = set()
+    prefixes.update(
+        Path(p)
+        for p in (
+            sys.prefix,
+            getattr(sys, "base_prefix", sys.prefix),
+            sys.exec_prefix,
+            getattr(sys, "base_exec_prefix", sys.exec_prefix),
+        )
     )
+    prefixes.update(
+        Path(parent)
+        for parent in (
+            "/usr",
+            "/usr/local",
+        )
+    )
+
+    for prefix in prefixes:
+        for lib_dir in ("lib", "lib64", "share"):
+            search_roots.append(prefix / lib_dir / "lite-series-upgrade")
 
     seen: set[Path] = set()
     for root in search_roots:
