@@ -37,7 +37,61 @@ from pathlib import Path
 
 import gi
 
-from lite_series_upgrade.apt_sources import should_backup_apt_source
+
+def _add_project_root_to_sys_path() -> bool:
+    """Ensure the bundled ``lite_series_upgrade`` package can be imported."""
+
+    script_path = Path(__file__).resolve()
+    search_roots = [script_path.parent]
+
+    for parent in list(script_path.parents)[:4]:
+        search_roots.append(parent)
+
+    search_roots.extend(
+        Path(path)
+        for path in os.environ.get("LITE_SERIES_UPGRADE_PATH", "").split(os.pathsep)
+        if path
+    )
+
+    search_roots.extend(
+        [
+            Path("/usr/lib/lite-series-upgrade"),
+            Path("/usr/share/lite-series-upgrade"),
+        ]
+    )
+
+    seen: set[Path] = set()
+    for root in search_roots:
+        try:
+            resolved = root.resolve()
+        except FileNotFoundError:
+            continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+
+        package_init = resolved / "lite_series_upgrade" / "__init__.py"
+        if package_init.exists():
+            root_str = str(resolved)
+            if root_str not in sys.path:
+                sys.path.insert(0, root_str)
+            return True
+
+    return False
+
+
+try:
+    from lite_series_upgrade.apt_sources import should_backup_apt_source
+except ModuleNotFoundError as exc:
+    if exc.name not in {"lite_series_upgrade", "lite_series_upgrade.apt_sources"}:
+        raise
+    if not _add_project_root_to_sys_path():
+        raise ModuleNotFoundError(
+            "lite_series_upgrade package could not be located. Set the"
+            " LITE_SERIES_UPGRADE_PATH environment variable or install the"
+            " project so that the package is available on PYTHONPATH."
+        ) from exc
+    from lite_series_upgrade.apt_sources import should_backup_apt_source
 
 
 # GTK
