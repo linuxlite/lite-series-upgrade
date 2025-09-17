@@ -1,6 +1,36 @@
-[tool.pytest.ini_options]
-pythonpath = ["."]
-
 [build-system]
 requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "lite-series-upgrade"
+version = "0.1.0"
+description = "GTK4-based desktop utility for upgrading Linux Lite 6.x systems to the 7.x series."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { file = "LICENSE" }
+authors = [
+    { name = "Linux Lite Developers" },
+]
+classifiers = [
+    "License :: OSI Approved :: GNU General Public License v2 (GPLv2)",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: POSIX :: Linux",
+]
+
+[tool.setuptools]
+packages = { find = { where = ["."] } }
+script-files = ["lite-series6-upgrade.py"]
+
+[tool.setuptools.data-files]
+"lib/lite-series-upgrade/lite_series_upgrade" = [
+    "lite_series_upgrade/*.py",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
