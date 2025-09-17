@@ -30,6 +30,11 @@ from pathlib import Path
 def _add_project_root_to_sys_path() -> bool:
     """Ensure the bundled ``lite_series_upgrade`` package can be imported."""
 
+    import importlib.util
+
+    if importlib.util.find_spec("lite_series_upgrade") is not None:
+        return True
+
     script_path = Path(__file__).resolve()
     search_roots = [script_path.parent]
 
@@ -104,15 +109,37 @@ def _add_project_root_to_sys_path() -> bool:
             continue
         seen.add(resolved)
 
-        package_init = resolved / "lite_series_upgrade" / "__init__.py"
-        if package_init.exists():
-            root_str = str(resolved)
+        candidates = []
+        # ``resolved`` may already be the package directory (for example when
+        # provided via ``LITE_SERIES_UPGRADE_PATH``).  Also consider the parent
+        # directory which should contain ``lite_series_upgrade`` when the
+        # project is installed under ``lib/lite-series-upgrade``.
+        if resolved.name == "lite_series_upgrade":
+            candidates.append(resolved)
+            candidates.append(resolved.parent)
+        else:
+            candidates.append(resolved)
+
+        for candidate in candidates:
+            package_root = None
+            package_dir = candidate / "lite_series_upgrade"
+            if package_dir.is_dir() and (package_dir / "__init__.py").is_file():
+                package_root = candidate
+            elif candidate.name == "lite_series_upgrade" and (candidate / "__init__.py").is_file():
+                package_root = candidate.parent
+
+            if package_root is None:
+                continue
+
+            root_str = str(package_root)
             if root_str not in sys.path:
                 sys.path.insert(0, root_str)
-            return True
+            return importlib.util.find_spec("lite_series_upgrade") is not None
 
-    return False
+    return importlib.util.find_spec("lite_series_upgrade") is not None
 
+
+_add_project_root_to_sys_path()
 
 try:
     from lite_series_upgrade.apt_sources import should_backup_apt_source
